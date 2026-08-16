@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { supabase } from '../lib/supabase';
+import { supabase, supabaseConfigured } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import { Calendar, Loader2 } from 'lucide-react';
 
@@ -23,6 +23,14 @@ export default function AdminLogin() {
     e.preventDefault();
     setLoading(true);
     setError(null);
+
+    if (!supabaseConfigured) {
+      setError(
+        'Supabase is not configured. Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to your .env file and restart the dev server.'
+      );
+      setLoading(false);
+      return;
+    }
 
     try {
       const { error } = await supabase.auth.signInWithPassword({
@@ -56,6 +64,13 @@ export default function AdminLogin() {
         {error && (
           <div className="mb-4 p-3 bg-red-50 text-red-600 text-sm rounded-xl border border-red-100">
             {error}
+          </div>
+        )}
+
+        {!supabaseConfigured && (
+          <div className="mb-4 p-3 bg-amber-50 text-amber-700 text-sm rounded-xl border border-amber-100">
+            Supabase is not configured &mdash; authentication won't work until VITE_SUPABASE_URL and
+            VITE_SUPABASE_ANON_KEY are set in your <code>.env</code> file.
           </div>
         )}
 
