@@ -119,17 +119,7 @@ Real Google Calendar testing requires valid Google Cloud configuration:
 5. Add your authorized redirect URI (e.g., `http://localhost:3000/api/oauth/callback`).
 6. Place the Client ID, Client Secret, and Redirect URI in your environment variables.
 
-## Demo Credentials
 
-The current implementation utilizes local demo authentication for previewing. **Demo-only credentials**:
-
-**Student:**
-`student@classsync.com`
-`123456`
-
-**Admin:**
-`admin@classsync.com`
-`admin123`
 
 ## Deployment
 
