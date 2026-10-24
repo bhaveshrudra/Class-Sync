@@ -42,16 +42,13 @@ import { googleCalendarService } from '../services/googleCalendarService';
 
 export default function StudentEventDetails() {
   const { id } = useParams<{ id: string }>();
-  const { logout, user } = useAuth();
+  const { logout, user, profile } = useAuth();
   const { getEventById, loading } = useEvents();
   const navigate = useNavigate();
 
-  // Student Profile State
-  const [studentProfile, setStudentProfile] = useState<{ year: string; branch: string; section: string }>({
-    year: '1',
-    branch: 'CSE',
-    section: 'A',
-  });
+  // Single-event fallback fetch for page refreshes
+  const [fallbackEvent, setFallbackEvent] = useState<AcademicEvent | null>(null);
+  const [fetchLoading, setFetchLoading] = useState(false);
 
   // Google Calendar Connection State
   const [calendarConnected, setCalendarConnected] = useState(false);
@@ -68,25 +65,28 @@ export default function StudentEventDetails() {
   const userId = user?.id || 'demo-student';
 
   useEffect(() => {
-    async function loadData() {
-      if (user?.id) {
+    // If event not in events list yet and not loading, fetch directly
+    if (id && !getEventById(id) && !loading) {
+      setFetchLoading(true);
+      (async () => {
         try {
           const { data } = await supabase
-            .from('profiles')
-            .select('year, branch, section')
-            .eq('id', user.id)
+            .from('academic_events')
+            .select('*')
+            .eq('id', id)
             .single();
-          if (data) {
-            setStudentProfile({
-              year: data.year || '1',
-              branch: data.branch || 'CSE',
-              section: data.section || 'A',
-            });
-          }
+          if (data) setFallbackEvent(data as AcademicEvent);
         } catch {
           // ignore
+        } finally {
+          setFetchLoading(false);
         }
-      }
+      })();
+    }
+  }, [id, getEventById, loading]);
+
+  useEffect(() => {
+    async function loadData() {
 
       try {
         const status = await googleCalendarService.getStatus(userId);
@@ -130,10 +130,14 @@ export default function StudentEventDetails() {
   };
 
   const handleDisconnectCalendar = async () => {
-    await googleCalendarService.disconnect(userId);
-    setCalendarConnected(false);
-    setConnectionDetails(null);
-    setSyncFeedback({ type: 'success', message: 'Google Calendar disconnected.' });
+    const success = await googleCalendarService.disconnect(userId);
+    if (success) {
+      setCalendarConnected(false);
+      setConnectionDetails(null);
+      setSyncFeedback({ type: 'success', message: 'Google Calendar disconnected.' });
+    } else {
+      setSyncFeedback({ type: 'error', message: 'Failed to disconnect Google Calendar. Please try again.' });
+    }
     setTimeout(() => setSyncFeedback(null), 3500);
   };
 
@@ -142,12 +146,12 @@ export default function StudentEventDetails() {
     navigate('/');
   };
 
-  // Look up the event in the shared events state
-  const event: AcademicEvent | undefined = id ? getEventById(id) : undefined;
+  // Look up the event in the shared events state or fallback direct fetch
+  const event: AcademicEvent | undefined = id ? (getEventById(id) || fallbackEvent || undefined) : undefined;
   const now = new Date();
 
   // Cohort eligibility check
-  const isEligible = event ? googleCalendarService.isStudentEligible(event, studentProfile) : false;
+  const isEligible = event ? googleCalendarService.isStudentEligible(event, profile) : false;
 
   const handleSyncEvent = async () => {
     if (!event) return;
@@ -155,7 +159,10 @@ export default function StudentEventDetails() {
     setSyncFeedback(null);
 
     try {
-      const result = await googleCalendarService.syncEvent(userId, event, studentProfile);
+      const studentCohort = profile
+        ? { year: profile.year || 'All', branch: profile.branch || 'All', section: profile.section || 'All' }
+        : { year: 'All', branch: 'All', section: 'All' };
+      const result = await googleCalendarService.syncEvent(userId, event, studentCohort);
       if (result.success) {
         const record = await googleCalendarService.getEventSyncRecord(userId, event.id);
         setSyncRecord(record);
@@ -304,7 +311,7 @@ export default function StudentEventDetails() {
         </div>
 
         {/* Missing Event State */}
-        {loading ? (
+        {loading || fetchLoading ? (
           <div className="bg-white rounded-3xl p-10 md:p-14 border border-slate-200/80 border-dashed text-center shadow-xs">
             <h1 className="text-2xl font-bold text-slate-900 mb-2">Loading event...</h1>
             <p className="text-slate-500 text-sm md:text-base max-w-md mx-auto">
@@ -599,7 +606,7 @@ export default function StudentEventDetails() {
                             <div className="font-bold">Cohort Filter Notice</div>
                             <div className="text-[11px] text-amber-700 mt-0.5">
                               This event is designated for Year {event.year}, Branch {event.branch}, Section {event.section} 
-                              (Your profile: Year {studentProfile.year}, Branch {studentProfile.branch}, Section {studentProfile.section}).
+                              (Your profile: Year {profile?.year || 'Unset'}, Branch {profile?.branch || 'Unset'}, Section {profile?.section || 'Unset'}).
                             </div>
                           </div>
                         </div>
@@ -703,9 +710,9 @@ export default function StudentEventDetails() {
                   To connect live Google Calendar accounts, please configure the Google OAuth environment variables in your server environment:
                 </p>
                 <div className="mt-3 p-3 bg-slate-900 text-slate-200 rounded-xl font-mono text-[11px] space-y-1">
-                  <div>GOOGLE_CLIENT_ID=...</div>
-                  <div>GOOGLE_CLIENT_SECRET=...</div>
-                  <div>GOOGLE_REDIRECT_URI=...</div>
+                  <div>• Google OAuth Client ID</div>
+                  <div>• Google OAuth Client Credentials</div>
+                  <div>• Authorized Redirect URI</div>
                 </div>
                 <p className="text-[11px] text-slate-400 mt-2">
                   Once set, clicking "Connect Google Calendar" will initiate secure Google OAuth authentication.

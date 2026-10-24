@@ -53,8 +53,8 @@ export default function AdminCreateEvent() {
       is_active: values.isActive,
     });
 
-    if (!createdEvent || !user?.id) {
-      throw new Error('Could not create event. Please check your permissions and try again.');
+    if (!createdEvent) {
+      throw new Error('Failed to create event. Please verify your connection and permissions.');
     }
 
     // Navigate to Admin Events with success notification
@@ -133,7 +133,7 @@ export default function AdminCreateEvent() {
 
         <div className="p-4 border-t border-slate-100 flex flex-col gap-3">
           <div className="px-3 py-2 bg-slate-50 rounded-xl border border-slate-100">
-            <div className="text-xs font-bold text-slate-800 truncate">{user?.email || 'admin@classsync.com'}</div>
+            <div className="text-xs font-bold text-slate-800 truncate">{user?.email || 'admin@classsync.in'}</div>
             <div className="text-[10px] text-slate-500 font-medium">Administrator</div>
           </div>
           <button 

@@ -24,9 +24,10 @@ import {
   formatDate, 
   formatTime 
 } from '../utils/eventUtils';
+import { googleCalendarService } from '../services/googleCalendarService';
 
 export default function StudentUpcoming() {
-  const { logout } = useAuth();
+  const { logout, profile } = useAuth();
   const { events } = useEvents();
   const navigate = useNavigate();
 
@@ -39,10 +40,11 @@ export default function StudentUpcoming() {
   const now = useMemo(() => new Date(), []);
   
   const { today, tomorrow, thisWeek, later, totalUpcomingCount } = useMemo(() => {
-    const grouped = groupAndSortEvents(events, now);
+    const eligibleEvents = events.filter((e) => googleCalendarService.isStudentEligible(e, profile));
+    const grouped = groupAndSortEvents(eligibleEvents, now);
     const total = grouped.today.length + grouped.tomorrow.length + grouped.thisWeek.length + grouped.later.length;
     return { ...grouped, totalUpcomingCount: total };
-  }, [events, now]);
+  }, [events, now, profile]);
 
   const getEventIcon = (type: AcademicEvent['type']) => {
     switch (type) {

@@ -1,6 +1,9 @@
+import { useState, useEffect } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useEvents } from '../contexts/EventsContext';
+import { supabase } from '../lib/supabase';
+import type { AcademicEvent } from '../types';
 import { 
   ArrowLeft, 
   AlertCircle, 
@@ -17,15 +20,39 @@ import type { EventFormValues } from '../components/EventForm';
 export default function AdminEditEvent() {
   const { id } = useParams<{ id: string }>();
   const { logout, user } = useAuth();
-  const { getEventById, updateEvent, loading } = useEvents();
+  const { getEventById, updateEvent, loading, error: eventsError } = useEvents();
   const navigate = useNavigate();
+
+  const [fetchedEvent, setFetchedEvent] = useState<AcademicEvent | null>(null);
+  const [fetchLoading, setFetchLoading] = useState(false);
+
+  useEffect(() => {
+    // If event not in events list yet and not loading, fetch directly
+    if (id && !getEventById(id) && !loading) {
+      setFetchLoading(true);
+      (async () => {
+        try {
+          const { data } = await supabase
+            .from('academic_events')
+            .select('*')
+            .eq('id', id)
+            .single();
+          if (data) setFetchedEvent(data as AcademicEvent);
+        } catch {
+          // ignore
+        } finally {
+          setFetchLoading(false);
+        }
+      })();
+    }
+  }, [id, getEventById, loading]);
 
   const handleLogout = async () => {
     await logout();
     navigate('/');
   };
 
-  const event = id ? getEventById(id) : undefined;
+  const event = id ? (getEventById(id) || fetchedEvent || undefined) : undefined;
 
   const handleEditSubmit = async (values: EventFormValues) => {
     if (!id || !event) return;
@@ -65,7 +92,7 @@ export default function AdminEditEvent() {
         },
       });
     } else {
-      throw new Error('Could not update event. Please check your permissions and try again.');
+      throw new Error(eventsError || 'Could not update event. Please check your permissions and try again.');
     }
   };
 
@@ -137,7 +164,7 @@ export default function AdminEditEvent() {
 
         <div className="p-4 border-t border-slate-100 flex flex-col gap-3">
           <div className="px-3 py-2 bg-slate-50 rounded-xl border border-slate-100">
-            <div className="text-xs font-bold text-slate-800 truncate">{user?.email || 'admin@classsync.com'}</div>
+            <div className="text-xs font-bold text-slate-800 truncate">{user?.email || 'admin@classsync.in'}</div>
             <div className="text-[10px] text-slate-500 font-medium">Administrator</div>
           </div>
           <button 
@@ -162,7 +189,7 @@ export default function AdminEditEvent() {
           </Link>
         </div>
 
-        {loading ? (
+        {loading || fetchLoading ? (
           <div className="bg-white rounded-3xl p-10 md:p-14 border border-slate-200/80 border-dashed text-center shadow-xs">
             <h1 className="text-2xl font-bold text-slate-900 mb-2">Loading event...</h1>
             <p className="text-slate-500 text-sm max-w-md mx-auto">

@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import { authenticateSupabaseUser } from './oauthSecurity';
 
 export default async function handler(req: any, res: any) {
   if (req.method !== 'GET') {
@@ -13,7 +14,11 @@ export default async function handler(req: any, res: any) {
   const isConfigured = Boolean(clientId && clientSecret);
 
   const url = new URL(req.url, `http://${req.headers?.host || 'localhost:3000'}`);
-  const userId = url.searchParams.get('userId') || 'demo-student';
+  const queryUserId = url.searchParams.get('userId');
+
+  // Authenticate user if token provided, else use query userId
+  const authResult = await authenticateSupabaseUser(req);
+  const userId = authResult.userId || queryUserId || 'demo-student';
 
   res.setHeader('Content-Type', 'application/json');
 
@@ -31,14 +36,21 @@ export default async function handler(req: any, res: any) {
 
   // Attempt reading from Supabase if available
   const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
-  const supabaseKey = process.env.VITE_SUPABASE_ANON_KEY;
+  const supabaseKey =
+    process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY;
 
   if (supabaseUrl && supabaseKey && !supabaseUrl.includes('placeholder')) {
     try {
-      const supabase = createClient(supabaseUrl, supabaseKey);
+      const authHeader = req.headers?.authorization;
+      const options: any = {};
+      if (authHeader) {
+        options.global = { headers: { Authorization: authHeader } };
+      }
+
+      const supabase = createClient(supabaseUrl, supabaseKey, options);
       const { data } = await supabase
         .from('calendar_connections')
-        .select('*')
+        .select('id, user_id, google_email, google_calendar_id, created_at, updated_at')
         .eq('user_id', userId)
         .maybeSingle();
 

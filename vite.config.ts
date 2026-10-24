@@ -2,6 +2,16 @@ import { defineConfig } from 'vite';
 import type { Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
+import { createClient } from '@supabase/supabase-js';
+import {
+  createSecureOAuthState,
+  verifyOAuthState,
+  sanitizeReturnTo,
+  encryptToken,
+  decryptToken,
+  revokeGoogleToken,
+  authenticateSupabaseUser,
+} from './api/google-calendar/oauthSecurity.ts';
 
 // Memory store for OAuth tokens and server-managed connection sessions
 interface TokenData {
@@ -60,13 +70,20 @@ function calendarApiPlugin(): Plugin {
             return;
           }
 
-          const userId = url.searchParams.get('userId') || 'demo-student';
+          // Authenticate user session
+          const authResult = await authenticateSupabaseUser(req);
+          const userId = authResult.userId || url.searchParams.get('userId') || 'demo-student';
+          const returnTo = sanitizeReturnTo(url.searchParams.get('returnTo'));
+
           const scopes = [
             'https://www.googleapis.com/auth/calendar.events',
             'https://www.googleapis.com/auth/userinfo.email',
           ].join(' ');
 
-          const state = Buffer.from(JSON.stringify({ userId, timestamp: Date.now() })).toString('base64');
+          const { state, nonce } = createSecureOAuthState(userId, returnTo);
+
+          res.setHeader('Set-Cookie', `classsync_oauth_nonce=${nonce}; Path=/; HttpOnly; SameSite=Lax; Max-Age=600`);
+
           const params = new URLSearchParams({
             client_id: clientId,
             redirect_uri: redirectUri,
@@ -98,26 +115,50 @@ function calendarApiPlugin(): Plugin {
           const errorParam = url.searchParams.get('error');
           const stateParam = url.searchParams.get('state');
 
-          let userId = 'demo-student';
-          if (stateParam) {
-            try {
-              const decoded = JSON.parse(Buffer.from(stateParam, 'base64').toString('utf-8'));
-              if (decoded?.userId) userId = decoded.userId;
-            } catch {
-              // ignore
+          // Cryptographic state verification
+          const stateVerification = verifyOAuthState(stateParam);
+          let returnPath = '/student/profile';
+
+          if (!stateVerification.valid || !stateVerification.payload) {
+            res.statusCode = 302;
+            res.setHeader('Location', `/student/profile?calendar_error=invalid_state`);
+            res.end();
+            return;
+          }
+
+          const { userId, returnTo, nonce } = stateVerification.payload;
+          returnPath = sanitizeReturnTo(returnTo);
+
+          // Cookie-based CSRF nonce check if present
+          const cookieHeader = req.headers.cookie;
+          if (cookieHeader) {
+            const cookies: Record<string, string> = {};
+            cookieHeader.split(';').forEach((c: string) => {
+              const [k, ...v] = c.split('=');
+              if (k && v) cookies[k.trim()] = decodeURIComponent(v.join('=').trim());
+            });
+            const cookieNonce = cookies['classsync_oauth_nonce'];
+            if (cookieNonce && cookieNonce !== nonce) {
+              res.statusCode = 302;
+              res.setHeader('Location', `${returnPath}?calendar_error=csrf_detected`);
+              res.end();
+              return;
             }
           }
 
+          // Clear nonce cookie
+          res.setHeader('Set-Cookie', 'classsync_oauth_nonce=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0');
+
           if (errorParam) {
             res.statusCode = 302;
-            res.setHeader('Location', `/student/profile?calendar_error=${errorParam === 'access_denied' ? 'denied' : 'error'}`);
+            res.setHeader('Location', `${returnPath}?calendar_error=${errorParam === 'access_denied' ? 'denied' : 'error'}`);
             res.end();
             return;
           }
 
           if (!code || !clientId || !clientSecret) {
             res.statusCode = 302;
-            res.setHeader('Location', '/student/profile?calendar_error=not_configured');
+            res.setHeader('Location', `${returnPath}?calendar_error=not_configured`);
             res.end();
             return;
           }
@@ -138,7 +179,7 @@ function calendarApiPlugin(): Plugin {
             const tokenData = (await tokenRes.json()) as Record<string, any>;
             if (!tokenRes.ok || !tokenData?.access_token) {
               res.statusCode = 302;
-              res.setHeader('Location', '/student/profile?calendar_error=token_exchange_failed');
+              res.setHeader('Location', `${returnPath}?calendar_error=token_exchange_failed`);
               res.end();
               return;
             }
@@ -156,24 +197,72 @@ function calendarApiPlugin(): Plugin {
               // ignore
             }
 
-            // Save token securely on server
+            // Save encrypted token securely on server
             userTokens.set(userId, {
-              access_token: tokenData.access_token,
-              refresh_token: tokenData.refresh_token,
+              access_token: encryptToken(tokenData.access_token),
+              refresh_token: tokenData.refresh_token ? encryptToken(tokenData.refresh_token) : undefined,
               expires_at: Date.now() + (tokenData.expires_in || 3600) * 1000,
               email: userEmail,
             });
 
+            // Update Supabase calendar_connections and calendar_tokens if configured
+            const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
+            const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+            if (supabaseUrl && supabaseServiceKey && !supabaseUrl.includes('placeholder')) {
+              try {
+                const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey);
+                await supabaseAdmin.from('calendar_connections').upsert(
+                  {
+                    user_id: userId,
+                    google_email: userEmail,
+                    google_calendar_id: 'primary',
+                    updated_at: new Date().toISOString(),
+                  },
+                  { onConflict: 'user_id' }
+                );
+
+                // Upsert to calendar_tokens vault
+                try {
+                  const encAccess = encryptToken(tokenData.access_token);
+                  let encRefresh = tokenData.refresh_token ? encryptToken(tokenData.refresh_token) : null;
+                  if (!encRefresh) {
+                    const { data: existingRow } = await supabaseAdmin
+                      .from('calendar_tokens')
+                      .select('encrypted_refresh_token')
+                      .eq('user_id', userId)
+                      .maybeSingle();
+                    if (existingRow?.encrypted_refresh_token) {
+                      encRefresh = existingRow.encrypted_refresh_token;
+                    }
+                  }
+                  await supabaseAdmin.from('calendar_tokens').upsert(
+                    {
+                      user_id: userId,
+                      encrypted_access_token: encAccess,
+                      encrypted_refresh_token: encRefresh,
+                      expires_at: new Date(Date.now() + (tokenData.expires_in || 3600) * 1000).toISOString(),
+                      updated_at: new Date().toISOString(),
+                    },
+                    { onConflict: 'user_id' }
+                  );
+                } catch {
+                  // Vault table might not yet be created in DB
+                }
+              } catch {
+                // ignore
+              }
+            }
+
             res.statusCode = 302;
             res.setHeader(
               'Location',
-              `/student/profile?calendar_connected=true&google_email=${encodeURIComponent(userEmail)}`
+              `${returnPath}?calendar_connected=true&google_email=${encodeURIComponent(userEmail)}`
             );
             res.end();
             return;
           } catch {
             res.statusCode = 302;
-            res.setHeader('Location', '/student/profile?calendar_error=server_error');
+            res.setHeader('Location', `${returnPath}?calendar_error=server_error`);
             res.end();
             return;
           }
@@ -181,7 +270,8 @@ function calendarApiPlugin(): Plugin {
 
         // 3. Status
         if (pathname === '/api/google-calendar/status') {
-          const userId = url.searchParams.get('userId') || 'demo-student';
+          const authResult = await authenticateSupabaseUser(req);
+          const userId = authResult.userId || url.searchParams.get('userId') || 'demo-student';
           const isConfigured = Boolean(clientId && clientSecret);
           const hasToken = userTokens.has(userId);
           const token = userTokens.get(userId);
@@ -209,12 +299,88 @@ function calendarApiPlugin(): Plugin {
 
         // 4. Disconnect
         if (pathname === '/api/google-calendar/disconnect') {
+          const authResult = await authenticateSupabaseUser(req);
           const body = await parseBody(req);
-          const userId = body?.userId || url.searchParams.get('userId') || 'demo-student';
+          const userId = authResult.userId || body?.userId || url.searchParams.get('userId') || 'demo-student';
+          const force = body?.force === true || url.searchParams.get('force') === 'true';
+
+          let rawToken: string | null = null;
+          const tokenRecord = userTokens.get(userId);
+          if (tokenRecord) {
+            rawToken = decryptToken(tokenRecord.refresh_token || tokenRecord.access_token);
+          }
+
+          const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
+          const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+          // If not in local memory, attempt lookup from calendar_tokens vault
+          if (!rawToken && supabaseUrl && supabaseServiceKey && !supabaseUrl.includes('placeholder')) {
+            try {
+              const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey);
+              const { data: row } = await supabaseAdmin
+                .from('calendar_tokens')
+                .select('encrypted_refresh_token, encrypted_access_token')
+                .eq('user_id', userId)
+                .maybeSingle();
+
+              if (row) {
+                rawToken =
+                  (row.encrypted_refresh_token ? decryptToken(row.encrypted_refresh_token) : null) ||
+                  (row.encrypted_access_token ? decryptToken(row.encrypted_access_token) : null);
+              }
+            } catch {
+              // ignore
+            }
+          }
+
+          let revokeResult = { success: true };
+          if (rawToken) {
+            revokeResult = await revokeGoogleToken(rawToken);
+          }
+
+          // If Google revocation failed and force is not set, keep tokens so disconnect is retryable
+          if (!revokeResult.success && !force) {
+            res.statusCode = 502;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(
+              JSON.stringify({
+                success: false,
+                revoked: false,
+                retryable: true,
+                error: 'Failed to revoke token with Google servers. Your local tokens have been preserved so you can retry.',
+                details: (revokeResult as any).error,
+              })
+            );
+            return;
+          }
+
+          // Token successfully revoked or force=true: clear records
           userTokens.delete(userId);
+
+          if (supabaseUrl && supabaseServiceKey && !supabaseUrl.includes('placeholder')) {
+            try {
+              const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey);
+              try {
+                await supabaseAdmin.from('calendar_tokens').delete().eq('user_id', userId);
+              } catch {
+                // ignore
+              }
+              await supabaseAdmin.from('calendar_connections').delete().eq('user_id', userId);
+            } catch {
+              // ignore
+            }
+          }
+
           res.statusCode = 200;
           res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify({ success: true }));
+          res.end(
+            JSON.stringify({
+              success: true,
+              revoked: revokeResult.success,
+              warning: revokeResult.success ? undefined : 'Token could not be confirmed revoked at Google, but local records were deleted.',
+              message: 'Google Calendar disconnected.',
+            })
+          );
           return;
         }
 

@@ -6,10 +6,24 @@ import type {
   GoogleCalendarSyncResult,
   BatchSyncResult 
 } from '../types';
-import { supabase } from '../lib/supabase';
+import { supabase, isSupabaseConfigured } from '../lib/supabase';
 
 const CONNECTION_STORAGE_KEY = 'classsync_calendar_connection';
 const SYNC_RECORDS_STORAGE_KEY = 'classsync_calendar_event_syncs';
+
+async function getAuthHeader(): Promise<Record<string, string>> {
+  if (isSupabaseConfigured) {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.access_token) {
+        return { Authorization: `Bearer ${session.access_token}` };
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return {};
+}
 
 export const googleCalendarService = {
   /**
@@ -17,62 +31,86 @@ export const googleCalendarService = {
    */
   isStudentEligible(
     event: AcademicEvent,
-    studentProfile: { year: string; branch: string; section: string }
+    studentProfile?: { year?: string | null; branch?: string | null; section?: string | null } | null
   ): boolean {
     if (!event.is_active) return false;
-    const yearMatches = event.year === 'All' || event.year === studentProfile.year;
-    const branchMatches = event.branch === 'All' || event.branch === studentProfile.branch;
-    const sectionMatches = event.section === 'All' || event.section === studentProfile.section;
+
+    const eventYearAll = !event.year || event.year.toUpperCase() === 'ALL';
+    const eventBranchAll = !event.branch || event.branch.toUpperCase() === 'ALL';
+    const eventSectionAll = !event.section || event.section.toUpperCase() === 'ALL';
+
+    // Students with missing or incomplete profiles must NOT receive cohort-specific events.
+    // They may only see strictly global announcements (All years, branches, and sections).
+    if (!studentProfile) {
+      return eventYearAll && eventBranchAll && eventSectionAll;
+    }
+
+    const yearMatches =
+      eventYearAll ||
+      (Boolean(studentProfile.year) &&
+        (event.year === studentProfile.year || event.year.toUpperCase() === studentProfile.year!.toUpperCase()));
+
+    const branchMatches =
+      eventBranchAll ||
+      (Boolean(studentProfile.branch) &&
+        (event.branch === studentProfile.branch || event.branch.toUpperCase() === studentProfile.branch!.toUpperCase()));
+
+    const sectionMatches =
+      eventSectionAll ||
+      (Boolean(studentProfile.section) &&
+        (event.section === studentProfile.section || event.section.toUpperCase() === studentProfile.section!.toUpperCase()));
+
     return yearMatches && branchMatches && sectionMatches;
   },
 
   /**
-   * Retrieves connection state from local storage or backend status endpoint
+   * Retrieves connection state from Supabase database or backend status endpoint
    */
   async getStatus(userId: string = 'demo-student'): Promise<GoogleCalendarStatusResponse> {
-    try {
-      const response = await fetch(`/api/google-calendar/status?userId=${encodeURIComponent(userId)}`);
-      if (response.ok) {
-        const data: GoogleCalendarStatusResponse = await response.json();
-        
-        // Also check localStorage fallback for demo mode
-        const localSaved = localStorage.getItem(CONNECTION_STORAGE_KEY);
-        if (localSaved) {
+    // 1. Check Supabase calendar_connections table if authenticated
+    if (isSupabaseConfigured && userId && userId !== 'demo-student') {
+      try {
+        const { data: dbConn, error: dbErr } = await supabase
+          .from('calendar_connections')
+          .select('*')
+          .eq('user_id', userId)
+          .maybeSingle();
+
+        if (!dbErr && dbConn) {
+          let serverConfigured = true;
           try {
-            const parsed = JSON.parse(localSaved);
-            if (parsed.user_id === userId) {
-              return {
-                configured: data.configured ?? false,
-                connected: true,
-                connection: parsed,
-              };
+            const apiRes = await fetch(`/api/google-calendar/status?userId=${encodeURIComponent(userId)}`);
+            if (apiRes.ok) {
+              const apiData = await apiRes.json();
+              if (apiData.configured !== undefined) serverConfigured = apiData.configured;
             }
           } catch {
-            // ignore
+            // Keep serverConfigured as true if database row exists
           }
+
+          return {
+            configured: serverConfigured,
+            connected: true,
+            connection: dbConn as CalendarConnection,
+          };
         }
-        
+      } catch (dbErr) {
+        console.warn('Could not query calendar_connections from Supabase:', dbErr);
+      }
+    }
+
+    // 2. Query backend API status endpoint with auth header
+    try {
+      const headers = await getAuthHeader();
+      const response = await fetch(`/api/google-calendar/status?userId=${encodeURIComponent(userId)}`, {
+        headers,
+      });
+      if (response.ok) {
+        const data: GoogleCalendarStatusResponse = await response.json();
         return data;
       }
     } catch (err) {
-      console.warn('Could not query calendar status endpoint, using local state:', err);
-    }
-
-    // Local fallback check
-    const localSaved = localStorage.getItem(CONNECTION_STORAGE_KEY);
-    if (localSaved) {
-      try {
-        const parsed = JSON.parse(localSaved);
-        if (parsed.user_id === userId) {
-          return {
-            configured: false,
-            connected: true,
-            connection: parsed,
-          };
-        }
-      } catch {
-        // ignore
-      }
+      console.warn('Could not query calendar status endpoint:', err);
     }
 
     return {
@@ -85,9 +123,16 @@ export const googleCalendarService = {
   /**
    * Initiates Google OAuth connection flow
    */
-  async startConnect(userId: string = 'demo-student'): Promise<{ success: boolean; url?: string; error?: string; configured?: boolean }> {
+  async startConnect(
+    userId: string = 'demo-student',
+    returnTo: string = '/student/profile'
+  ): Promise<{ success: boolean; url?: string; error?: string; configured?: boolean }> {
     try {
-      const res = await fetch(`/api/google-calendar/auth?userId=${encodeURIComponent(userId)}`);
+      const headers = await getAuthHeader();
+      const res = await fetch(
+        `/api/google-calendar/auth?userId=${encodeURIComponent(userId)}&returnTo=${encodeURIComponent(returnTo)}`,
+        { headers }
+      );
       const data = await res.json();
 
       if (!res.ok || !data.configured || !data.url) {
@@ -113,7 +158,7 @@ export const googleCalendarService = {
   },
 
   /**
-   * Save successful connection locally
+   * Save successful connection locally without storing access or refresh tokens
    */
   saveLocalConnection(userId: string, email: string, calendarId: string = 'primary'): CalendarConnection {
     const connection: CalendarConnection = {
@@ -124,23 +169,51 @@ export const googleCalendarService = {
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
-    localStorage.setItem(CONNECTION_STORAGE_KEY, JSON.stringify(connection));
     return connection;
   },
 
   /**
-   * Disconnects Google Calendar and cleans up state
+   * Disconnects Google Calendar and cleans up database and server state.
+   * Ensures token revocation failures do not produce a misleading success response
+   * and preserves state for retry when revocation fails.
    */
-  async disconnect(userId: string = 'demo-student'): Promise<boolean> {
+  async disconnect(userId: string = 'demo-student', force: boolean = false): Promise<boolean> {
+    // 1. Notify backend server to revoke tokens and remove server records first
     try {
-      await fetch('/api/google-calendar/disconnect', {
+      const headers = await getAuthHeader();
+      const res = await fetch('/api/google-calendar/disconnect', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId }),
+        headers: {
+          'Content-Type': 'application/json',
+          ...headers,
+        },
+        body: JSON.stringify({ userId, force }),
       });
-    } catch {
-      // ignore
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok || data.success === false) {
+        console.warn('Google Calendar disconnect failed on server:', data.error || data.details);
+        // Do NOT wipe local or database connection state on revocation failure so user can retry
+        return false;
+      }
+    } catch (netErr) {
+      console.warn('Network error during calendar disconnect:', netErr);
+      return false;
     }
+
+    // 2. Cleanup Supabase client-side connection if server succeeded
+    if (isSupabaseConfigured && userId && userId !== 'demo-student') {
+      try {
+        await supabase
+          .from('calendar_connections')
+          .delete()
+          .eq('user_id', userId);
+      } catch (err) {
+        console.warn('Error deleting calendar connection from Supabase:', err);
+      }
+    }
+
     localStorage.removeItem(CONNECTION_STORAGE_KEY);
     return true;
   },

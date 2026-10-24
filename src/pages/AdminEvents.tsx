@@ -243,7 +243,7 @@ export default function AdminEvents() {
         {/* User Identity and Logout */}
         <div className="p-4 border-t border-slate-100 flex flex-col gap-3">
           <div className="px-3 py-2 bg-slate-50 rounded-xl border border-slate-100">
-            <div className="text-xs font-bold text-slate-800 truncate">{user?.email || 'admin@classsync.com'}</div>
+            <div className="text-xs font-bold text-slate-800 truncate">{user?.email || 'admin@classsync.in'}</div>
             <div className="text-[10px] text-slate-500 font-medium">Administrator</div>
           </div>
           <button 

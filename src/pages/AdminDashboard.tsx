@@ -1,7 +1,8 @@
+import { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { useEvents } from '../contexts/EventsContext';
 import { useNavigate, Link } from 'react-router-dom';
-import { useMemo } from 'react';
+import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import { 
   LogOut, 
   Users, 
@@ -28,6 +29,22 @@ export default function AdminDashboard() {
   const { events } = useEvents();
   const navigate = useNavigate();
 
+  const [realStudentsCount, setRealStudentsCount] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (isSupabaseConfigured) {
+      supabase
+        .from('profiles')
+        .select('*', { count: 'exact', head: true })
+        .eq('role', 'student')
+        .then(({ count, error }) => {
+          if (!error && count !== null) {
+            setRealStudentsCount(count);
+          }
+        });
+    }
+  }, []);
+
   const handleLogout = async () => {
     await logout();
     navigate('/');
@@ -44,8 +61,8 @@ export default function AdminDashboard() {
   } = useMemo(() => {
     const now = new Date();
     
-    // Calculations from shared events state
-    const studentsCount = mockStudents.length;
+    // Calculations from shared events state & real student count
+    const studentsCount = realStudentsCount ?? mockStudents.length;
     const activeCount = events.filter((e) => e.is_active).length;
     const assignments = events.filter(
       (e) => e.is_active && (e.type === 'Assignment' || e.type === 'Submission')
@@ -77,7 +94,7 @@ export default function AdminDashboard() {
       recentEvents: recent,
       upcomingDeadlines: upcoming
     };
-  }, [events]);
+  }, [events, realStudentsCount]);
 
   // Helper for event type icons
   const getEventIcon = (type: AcademicEvent['type']) => {
@@ -172,7 +189,7 @@ export default function AdminDashboard() {
         {/* User Identity and Logout */}
         <div className="p-4 border-t border-slate-100 flex flex-col gap-3">
           <div className="px-3 py-2 bg-slate-50 rounded-xl border border-slate-100">
-            <div className="text-xs font-bold text-slate-800 truncate">{user?.email || 'admin@classsync.com'}</div>
+            <div className="text-xs font-bold text-slate-800 truncate">{user?.email || 'admin@classsync.in'}</div>
             <div className="text-[10px] text-slate-500 font-medium">Administrator</div>
           </div>
           <button 

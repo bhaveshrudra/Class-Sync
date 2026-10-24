@@ -22,8 +22,8 @@ import { googleCalendarService } from '../services/googleCalendarService';
 import type { CalendarConnection, CalendarEventSync } from '../types';
 
 export default function StudentProfile() {
-  const { user } = useAuth();
-  const { events } = useEvents();
+  const { user, refreshProfile } = useAuth();
+  const { events, refreshEvents } = useEvents();
   const [searchParams, setSearchParams] = useSearchParams();
   
   const [name, setName] = useState('');
@@ -54,30 +54,42 @@ export default function StudentProfile() {
   useEffect(() => {
     const connectedParam = searchParams.get('calendar_connected');
     const errorParam = searchParams.get('calendar_error');
+    const googleEmailParam = searchParams.get('google_email');
 
     if (connectedParam === 'true') {
       setMessage({
         type: 'success',
-        text: 'Google Calendar successfully connected! Academic events are ready to sync.'
+        text: 'Google Calendar successfully connected! Academic events are ready to sync.',
       });
-      // Clean up search params
+      // Fetch verified server-side connection record from Supabase
+      googleCalendarService.getStatus(user?.id || userId).then((status) => {
+        setCalendarConnected(status.connected);
+        if (status.connection) {
+          setConnectionDetails(status.connection);
+        }
+      });
       searchParams.delete('calendar_connected');
+      if (googleEmailParam) searchParams.delete('google_email');
       setSearchParams(searchParams, { replace: true });
     } else if (errorParam) {
       let errorMsg = 'Failed to connect Google Calendar.';
-      if (errorParam === 'missing_credentials') {
+      if (errorParam === 'missing_credentials' || errorParam === 'not_configured') {
         errorMsg = 'Google OAuth credentials are not configured on the server.';
-      } else if (errorParam === 'access_denied') {
+      } else if (errorParam === 'access_denied' || errorParam === 'denied') {
         errorMsg = 'Google Calendar authorization was declined.';
+      } else if (errorParam === 'invalid_state' || errorParam === 'csrf_detected') {
+        errorMsg = 'Security validation failed (invalid state or session). Please try again.';
+      } else if (errorParam === 'token_exchange_failed') {
+        errorMsg = 'Failed to exchange authorization token with Google. Please try again.';
       }
       setMessage({
         type: 'error',
-        text: errorMsg
+        text: errorMsg,
       });
       searchParams.delete('calendar_error');
       setSearchParams(searchParams, { replace: true });
     }
-  }, [searchParams, setSearchParams]);
+  }, [searchParams, setSearchParams, userId, user]);
 
   // Load Profile & Calendar Status & Local Syncs
   useEffect(() => {
@@ -155,11 +167,13 @@ export default function StudentProfile() {
         
       if (error) throw error;
       
+      await refreshProfile();
+      await refreshEvents();
+
       setMessage({ type: 'success', text: 'Profile updated successfully.' });
     } catch (err: any) {
       console.error("Error updating profile:", err);
-      // For demo fallback mock success
-      setMessage({ type: 'success', text: 'Profile preferences updated.' });
+      setMessage({ type: 'error', text: err?.message || 'Could not update profile. Please try again.' });
     } finally {
       setSaving(false);
     }
@@ -169,14 +183,14 @@ export default function StudentProfile() {
     setConnectingCalendar(true);
     setMessage(null);
     try {
-      const result = await googleCalendarService.startConnect(userId);
+      const result = await googleCalendarService.startConnect(userId, '/student/profile');
       if (result.success && result.url) {
         window.location.href = result.url;
       } else {
         if (result.configured === false) {
           setShowConfigModal(true);
         } else {
-          setMessage({ type: 'error', text: 'Google Calendar connection failed. Please try again.' });
+          setMessage({ type: 'error', text: result.error || 'Google Calendar connection failed. Please try again.' });
         }
       }
     } catch {
@@ -189,7 +203,7 @@ export default function StudentProfile() {
   const handleDisconnectCalendar = async () => {
     setDisconnectingCalendar(true);
     try {
-      const success = await googleCalendarService.disconnect(userId);
+      const success = await googleCalendarService.disconnect(user?.id || userId);
       if (success) {
         setCalendarConnected(false);
         setConnectionDetails(null);
@@ -501,6 +515,12 @@ export default function StudentProfile() {
                   Connecting Google Calendar allows ClassSync to automatically synchronize your personalized academic schedule, test reminders, and assignment deadlines into your personal Google Calendar.
                 </p>
 
+                <div className="p-3.5 bg-slate-50 rounded-2xl border border-slate-200/80 text-xs text-slate-600 leading-relaxed space-y-2">
+                  <div className="font-semibold text-slate-800">Permissions Requested:</div>
+                  <div className="text-[11px] leading-normal">• <strong className="text-slate-700">Calendar Events:</strong> Google's <code className="bg-slate-200/70 px-1 py-0.5 rounded text-[10px]">.../auth/calendar.events</code> scope permits viewing and editing events across calendars in your account. ClassSync uses this permission solely to add and manage your academic deadlines and exam reminders, and will never modify your personal calendar entries.</div>
+                  <div className="text-[11px] leading-normal">• <strong className="text-slate-700">Account Identity:</strong> <code className="bg-slate-200/70 px-1 py-0.5 rounded text-[10px]">.../auth/userinfo.email</code> identifies your connected Google account.</div>
+                </div>
+
                 <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
                   <div className="flex items-center gap-1.5 text-xs text-slate-400">
                     <Info className="w-3.5 h-3.5 text-blue-500 shrink-0" />
@@ -536,12 +556,12 @@ export default function StudentProfile() {
                   Google Calendar OAuth Configuration
                 </h3>
                 <p className="text-slate-500 text-xs mt-1.5 leading-relaxed">
-                  To connect live Google Calendar accounts, please configure the Google OAuth environment variables in your server environment:
+                  To connect live Google Calendar accounts, please configure the Google Cloud OAuth credentials in your server environment:
                 </p>
                 <div className="mt-3 p-3 bg-slate-900 text-slate-200 rounded-xl font-mono text-[11px] space-y-1">
-                  <div>GOOGLE_CLIENT_ID=...</div>
-                  <div>GOOGLE_CLIENT_SECRET=...</div>
-                  <div>GOOGLE_REDIRECT_URI=...</div>
+                  <div>• Google OAuth Client ID</div>
+                  <div>• Google OAuth Client Credentials</div>
+                  <div>• Authorized Redirect URI</div>
                 </div>
                 <p className="text-[11px] text-slate-400 mt-2">
                   Once set, clicking "Connect Google Calendar" will initiate secure Google OAuth authentication.

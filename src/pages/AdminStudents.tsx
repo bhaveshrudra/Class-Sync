@@ -33,14 +33,23 @@ export default function AdminStudents() {
   useEffect(() => {
     async function loadStudents() {
       try {
-        const { data, error } = await supabase
+        let { data, error } = await supabase
           .from('profiles')
           .select('id, name, email, roll_number, year, branch, section, role')
           .eq('role', 'student');
 
+        if (error && error.message && error.message.includes('roll_number')) {
+          const fallbackRes = await supabase
+            .from('profiles')
+            .select('id, name, email, year, branch, section, role')
+            .eq('role', 'student');
+          data = fallbackRes.data ? fallbackRes.data.map((p: any) => ({ ...p, roll_number: 'N/A' })) : null;
+          error = fallbackRes.error;
+        }
+
         if (!error && data && data.length > 0) {
           // Map to match the interface
-          const dbStudents = data.map(p => ({
+          const dbStudents = data.map((p: any) => ({
             id: p.id,
             name: p.name || 'Unknown Student',
             email: p.email || '',
@@ -159,7 +168,7 @@ export default function AdminStudents() {
 
         <div className="p-4 border-t border-slate-100 flex flex-col gap-3">
           <div className="px-3 py-2 bg-slate-50 rounded-xl border border-slate-100">
-            <div className="text-xs font-bold text-slate-800 truncate">{user?.email || 'admin@classsync.com'}</div>
+            <div className="text-xs font-bold text-slate-800 truncate">{user?.email || 'admin@classsync.in'}</div>
             <div className="text-[10px] text-slate-500 font-medium">Administrator</div>
           </div>
           <button 

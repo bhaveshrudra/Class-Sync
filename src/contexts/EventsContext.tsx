@@ -1,6 +1,6 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import type { AcademicEvent } from '../types';
-import { supabase } from '../lib/supabase';
+import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import { useAuth } from './AuthContext';
 
 type EventCreateInput = Omit<AcademicEvent, 'id' | 'created_at' | 'updated_at' | 'created_by'>;
@@ -10,7 +10,7 @@ interface EventsContextType {
   events: AcademicEvent[];
   loading: boolean;
   error: string | null;
-  addEvent: (eventData: EventCreateInput) => Promise<AcademicEvent | null>;
+  addEvent: (eventData: EventCreateInput) => Promise<AcademicEvent>;
   updateEvent: (id: string, updates: EventUpdateInput) => Promise<boolean>;
   deleteEvent: (id: string) => Promise<boolean>;
   toggleEventActive: (id: string) => Promise<boolean>;
@@ -46,8 +46,8 @@ export const EventsProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
-  const refreshEvents = async (): Promise<void> => {
-    if (!user) {
+  const refreshEvents = useCallback(async (): Promise<void> => {
+    if (!isSupabaseConfigured || !user) {
       setEvents([]);
       setError(null);
       setLoading(false);
@@ -63,25 +63,37 @@ export const EventsProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       .order('created_at', { ascending: false });
 
     if (loadError) {
-      console.error('Failed to load events:', loadError);
+      console.error('Failed to load events:', {
+        message: loadError.message,
+        code: loadError.code,
+        details: loadError.details,
+        hint: loadError.hint,
+      });
       setEvents([]);
-      setError(getFriendlySupabaseError('load'));
+      setError(loadError.message || getFriendlySupabaseError('load'));
       setLoading(false);
       return;
     }
 
     setEvents((data ?? []) as AcademicEvent[]);
     setLoading(false);
-  };
+  }, [user]);
 
   useEffect(() => {
     refreshEvents();
-  }, [user?.id]);
+  }, [refreshEvents]);
 
-  const addEvent = async (eventData: EventCreateInput): Promise<AcademicEvent | null> => {
+  const addEvent = async (eventData: EventCreateInput): Promise<AcademicEvent> => {
+    if (!isSupabaseConfigured) {
+      const configError = 'Supabase is not configured. Please add valid VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to your .env file.';
+      setError(configError);
+      throw new Error(configError);
+    }
+
     if (!user) {
-      setError('You must be logged in to create an event.');
-      return null;
+      const authError = 'You must be logged in as an administrator to create an event.';
+      setError(authError);
+      throw new Error(authError);
     }
 
     setError(null);
@@ -96,9 +108,15 @@ export const EventsProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       .single();
 
     if (insertError) {
-      console.error('Failed to create event:', insertError);
-      setError(getFriendlySupabaseError('create'));
-      return null;
+      console.error('Failed to create event:', {
+        message: insertError.message,
+        code: insertError.code,
+        details: insertError.details,
+        hint: insertError.hint,
+      });
+      const errorMsg = insertError.message || getFriendlySupabaseError('create');
+      setError(errorMsg);
+      throw new Error(errorMsg);
     }
 
     const created = data as AcademicEvent;
@@ -107,6 +125,12 @@ export const EventsProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   };
 
   const updateEvent = async (id: string, updates: EventUpdateInput): Promise<boolean> => {
+    if (!isSupabaseConfigured) {
+      const configError = 'Supabase is not configured. Please add valid VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to your .env file.';
+      setError(configError);
+      return false;
+    }
+
     setError(null);
 
     const { data, error: updateError } = await supabase
@@ -117,8 +141,14 @@ export const EventsProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       .single();
 
     if (updateError) {
-      console.error('Failed to update event:', updateError);
-      setError(getFriendlySupabaseError('update'));
+      console.error('Failed to update event:', {
+        message: updateError.message,
+        code: updateError.code,
+        details: updateError.details,
+        hint: updateError.hint,
+      });
+      const errorMsg = updateError.message || getFriendlySupabaseError('update');
+      setError(errorMsg);
       return false;
     }
 
@@ -128,6 +158,12 @@ export const EventsProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   };
 
   const deleteEvent = async (id: string): Promise<boolean> => {
+    if (!isSupabaseConfigured) {
+      const configError = 'Supabase is not configured. Please add valid VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to your .env file.';
+      setError(configError);
+      return false;
+    }
+
     setError(null);
 
     const { data, error: deleteError } = await supabase
@@ -138,13 +174,20 @@ export const EventsProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       .maybeSingle();
 
     if (deleteError) {
-      console.error('Failed to delete event:', deleteError);
-      setError(getFriendlySupabaseError('delete'));
+      console.error('Failed to delete event:', {
+        message: deleteError.message,
+        code: deleteError.code,
+        details: deleteError.details,
+        hint: deleteError.hint,
+      });
+      const errorMsg = deleteError.message || getFriendlySupabaseError('delete');
+      setError(errorMsg);
       return false;
     }
 
     if (!data) {
-      setError(getFriendlySupabaseError('delete'));
+      const notFoundMsg = 'Event not found or you do not have permission to delete it.';
+      setError(notFoundMsg);
       return false;
     }
 
@@ -153,6 +196,12 @@ export const EventsProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   };
 
   const toggleEventActive = async (id: string): Promise<boolean> => {
+    if (!isSupabaseConfigured) {
+      const configError = 'Supabase is not configured. Please add valid VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to your .env file.';
+      setError(configError);
+      return false;
+    }
+
     const currentEvent = events.find((evt) => evt.id === id);
     if (!currentEvent) {
       setError(getFriendlySupabaseError('toggle'));
@@ -169,8 +218,14 @@ export const EventsProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       .single();
 
     if (toggleError) {
-      console.error('Failed to toggle event status:', toggleError);
-      setError(getFriendlySupabaseError('toggle'));
+      console.error('Failed to toggle event status:', {
+        message: toggleError.message,
+        code: toggleError.code,
+        details: toggleError.details,
+        hint: toggleError.hint,
+      });
+      const errorMsg = toggleError.message || getFriendlySupabaseError('toggle');
+      setError(errorMsg);
       return false;
     }
 

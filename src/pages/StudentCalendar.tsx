@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { useEvents } from '../contexts/EventsContext';
 import { useNavigate, Link } from 'react-router-dom';
@@ -29,13 +29,18 @@ import {
   getEventBadgeColor,
   getStatusBadgeColor
 } from '../utils/eventUtils';
+import { googleCalendarService } from '../services/googleCalendarService';
 
 const DAYS_OF_WEEK = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 export default function StudentCalendar() {
-  const { logout } = useAuth();
+  const { logout, profile } = useAuth();
   const { events } = useEvents();
   const navigate = useNavigate();
+
+  const eligibleEvents = useMemo(() => {
+    return events.filter((e) => googleCalendarService.isStudentEligible(e, profile));
+  }, [events, profile]);
 
   // Current system date
   const now = new Date();
@@ -75,11 +80,11 @@ export default function StudentCalendar() {
   const daysInCurrentMonth = new Date(year, month + 1, 0).getDate();
   const daysInPrevMonth = new Date(year, month, 0).getDate();
 
-  // Events in current selected month
-  const monthEvents = getEventsForMonth(events, year, month);
+  // Events in current selected month (cohort filtered)
+  const monthEvents = getEventsForMonth(eligibleEvents, year, month);
 
-  // Events for selected day
-  const selectedDayEvents = getEventsForDate(events, selectedDate);
+  // Events for selected day (cohort filtered)
+  const selectedDayEvents = getEventsForDate(eligibleEvents, selectedDate);
 
   // Helper for icon based on type
   const getEventIcon = (type: AcademicEvent['type']) => {
@@ -105,7 +110,7 @@ export default function StudentCalendar() {
   for (let i = firstDayOfMonth - 1; i >= 0; i--) {
     const dayNum = daysInPrevMonth - i;
     const prevDate = new Date(year, month - 1, dayNum);
-    const dayEvents = getEventsForDate(events, prevDate);
+    const dayEvents = getEventsForDate(eligibleEvents, prevDate);
     calendarCells.push({
       date: prevDate,
       dayNum,
@@ -117,7 +122,7 @@ export default function StudentCalendar() {
   // 2. Current month days
   for (let day = 1; day <= daysInCurrentMonth; day++) {
     const cellDate = new Date(year, month, day);
-    const dayEvents = getEventsForDate(events, cellDate);
+    const dayEvents = getEventsForDate(eligibleEvents, cellDate);
     calendarCells.push({
       date: cellDate,
       dayNum: day,
@@ -131,7 +136,7 @@ export default function StudentCalendar() {
   if (remainingCells < 7) {
     for (let day = 1; day <= remainingCells; day++) {
       const nextDate = new Date(year, month + 1, day);
-      const dayEvents = getEventsForDate(events, nextDate);
+      const dayEvents = getEventsForDate(eligibleEvents, nextDate);
       calendarCells.push({
         date: nextDate,
         dayNum: day,

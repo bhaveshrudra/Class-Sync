@@ -221,6 +221,7 @@ export default function EventForm({ mode, initialData, onSubmit }: EventFormProp
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting) return;
     setGeneralError('');
 
     if (!validateForm()) {

@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { supabase } from '../lib/supabase';
+import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import { Calendar, Loader2 } from 'lucide-react';
 
@@ -14,22 +14,50 @@ export default function AdminLogin() {
   const { session } = useAuth();
 
   // If already logged in, redirect to admin dashboard
-  if (session) {
-    navigate('/admin', { replace: true });
-    return null;
-  }
+  useEffect(() => {
+    if (session) {
+      navigate('/admin', { replace: true });
+    }
+  }, [session, navigate]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError(null);
 
+    const cleanEmail = email.trim();
+
     try {
-      const { error } = await supabase.auth.signInWithPassword({
-        email,
+      if (!isSupabaseConfigured) {
+        throw new Error(
+          'Supabase is not configured. Please add valid VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to your .env file.'
+        );
+      }
+
+      const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
+        email: cleanEmail,
         password,
       });
-      if (error) throw new Error('Invalid email or password.');
+
+      if (signInError) {
+        throw new Error(signInError.message || 'Invalid email or password.');
+      }
+
+      // Verify that the authenticated account has an administrator profile
+      if (signInData.user) {
+        const { data: profile, error: profileError } = await supabase
+          .from('profiles')
+          .select('role')
+          .eq('id', signInData.user.id)
+          .single();
+
+        if (profileError || profile?.role !== 'admin') {
+          // Immediately sign out unprivileged account to prevent unauthorized session
+          await supabase.auth.signOut();
+          throw new Error('Access denied. This account does not have administrator privileges.');
+        }
+      }
+
       navigate('/admin', { replace: true });
     } catch (err: any) {
       setError(err.message || 'Something went wrong.');
@@ -69,7 +97,7 @@ export default function AdminLogin() {
               type="email"
               required
               className="w-full px-4 py-2 rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-slate-900 focus:border-transparent transition-all"
-              placeholder="admin@classsync.edu"
+              placeholder="admin@classsync.in"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
             />

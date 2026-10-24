@@ -24,3 +24,12 @@ dist-ssr
 *.sw?
 
 .env
+.env*.local
+
+
+.env
+.env.*
+!.env.example
+
+.env
+.env.*
